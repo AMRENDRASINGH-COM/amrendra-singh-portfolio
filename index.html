@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'sha256-k1PxugDxBV0g+H+Pf/HltiAyY+5QQ2KydC0VD1wFIG8='; style-src 'unsafe-inline' https://fonts.googleapis.com; style-src-elem 'sha256-DHKGV547a4cjGvTaU7wCJkSt0kvPRkuPtPdECdy/85Q=' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Amrendra Singh Portfolio</title>
 <meta name="description" content="Portfolio of Amrendra Singh, Data Scientist and GenAI Engineer at Soojh AI. Multimodal RAG, LangGraph multi-agent systems, Streamlit apps, GitHub projects and verified certificates.">
@@ -589,7 +591,7 @@ body.lock { overflow: hidden; }
     <div class="chat-log" id="chat-log" role="log" aria-live="polite"></div>
     <div class="chat-chips" id="chat-chips"></div>
     <form class="chat-in" id="chat-form" autocomplete="off">
-      <input id="sq" type="text" placeholder="Ask about projects, apps, certificates..." autocomplete="off" spellcheck="false" aria-label="Your question">
+      <input id="sq" type="text" maxlength="200" placeholder="Ask about projects, apps, certificates..." autocomplete="off" spellcheck="false" aria-label="Your question">
       <button class="send" type="submit" aria-label="Send question"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
     </form>
   </div>
@@ -960,6 +962,8 @@ body.lock { overflow: hidden; }
   function ask(q) {
     q = (q || '').trim();
     if (!q || busy) return;
+    q = q.slice(0, 200);
+    while (log.children.length > 60) log.removeChild(log.firstChild);
     input.value = ''; userMsg(q); botReply(q);
   }
   function openChat(q) {
@@ -1008,23 +1012,51 @@ body.lock { overflow: hidden; }
 
   /* ── Live refresh from the free public GitHub API (silently falls back to the built-in list) ── */
   function pretty(n) { return n.replace(/[-_]+/g, ' ').trim(); }
+  var GH_URL = 'https://api.github.com/users/AMRENDRASINGH-COM/repos?per_page=100&sort=pushed';
+  var CACHE_KEY = 'as.repos.v1', CACHE_MS = 30 * 60 * 1000, BLOCK_MS = 15 * 60 * 1000;
+  function lsGet(k) { try { return JSON.parse(localStorage.getItem(k) || 'null'); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  function cleanText(s, n) { return typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, n) : ''; }
+  function cleanRepo(a) {
+    if (!a || typeof a !== 'object' || a.fork || a.private) return null;
+    if (typeof a.name !== 'string' || !/^[A-Za-z0-9._-]{1,100}$/.test(a.name)) return null;
+    var pushed = a.pushed_at || a.date, home = a.homepage != null ? a.homepage : a.app;
+    return {
+      name: a.name,
+      desc: cleanText(a.description != null ? a.description : a.desc, 300),
+      lang: cleanText(a.language != null ? a.language : a.lang, 30),
+      date: typeof pushed === 'string' && /^\d{4}-\d{2}/.test(pushed) ? pushed.slice(0, 7) : '',
+      app: typeof home === 'string' && /^https:\/\/[a-z0-9-]{1,63}\.streamlit\.app(\/[^\s"'<>]*)?$/i.test(home) ? home : '',
+      topics: Array.isArray(a.topics) ? a.topics.filter(function (t) { return typeof t === 'string' && /^[a-z0-9-]{1,40}$/.test(t); }).slice(0, 8) : []
+    };
+  }
+  function applyRepos(list) {
+    list.forEach(function (a) {
+      var r = REPOS.filter(function (x) { return x.n.toLowerCase() === a.name.toLowerCase(); })[0];
+      if (!r) { r = { n: a.name, title: pretty(a.name), cat: 'Other', lang: '', date: '', tags: a.topics, desc: a.desc || 'New repository.' }; REPOS.push(r); }
+      if (a.lang) r.lang = a.lang;
+      if (a.date) r.date = a.date;
+      if (a.app && !r.app) r.app = a.app;
+    });
+    REPOS.sort(function (x, y) { return y.date.localeCompare(x.date); });
+    renderAll(); buildIndex();
+  }
   function refresh() {
     if (!window.fetch) return;
-    fetch('https://api.github.com/users/AMRENDRASINGH-COM/repos?per_page=100&sort=pushed', { headers: { Accept: 'application/vnd.github+json' } })
-      .then(function (r) { return r.ok ? r.json() : null; })
+    var now = Date.now(), cache = lsGet(CACHE_KEY), block = lsGet(CACHE_KEY + '.block');
+    if (cache && Array.isArray(cache.d) && now - cache.t < CACHE_MS) { applyRepos(cache.d.slice(0, 100).map(cleanRepo).filter(Boolean)); return; }
+    if (typeof block === 'number' && now - block < BLOCK_MS) return;
+    var ctrl = window.AbortController ? new AbortController() : null, timer = ctrl ? setTimeout(function () { ctrl.abort(); }, 7000) : 0;
+    fetch(GH_URL, { headers: { Accept: 'application/vnd.github+json' }, credentials: 'omit', referrerPolicy: 'no-referrer', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { if (!r.ok) { lsSet(CACHE_KEY + '.block', Date.now()); return null; } return r.json(); })
       .then(function (data) {
-        if (!Array.isArray(data) || !data.length) return;
-        data.forEach(function (a) {
-          if (a.fork) return;
-          var r = REPOS.filter(function (x) { return x.n.toLowerCase() === a.name.toLowerCase(); })[0];
-          if (!r) { r = { n: a.name, title: pretty(a.name), cat: 'Other', lang: '', date: '', tags: a.topics || [], desc: a.description || 'New repository.' }; REPOS.push(r); }
-          if (a.language) r.lang = a.language;
-          if (a.pushed_at) r.date = a.pushed_at.slice(0, 7);
-          if (a.homepage && /streamlit\.app/.test(a.homepage) && !r.app) r.app = a.homepage;
-        });
-        REPOS.sort(function (x, y) { return y.date.localeCompare(x.date); });
-        renderAll(); buildIndex();
-      }).catch(function () {});
+        if (timer) clearTimeout(timer);
+        if (!Array.isArray(data)) return;
+        var clean = data.slice(0, 100).map(cleanRepo).filter(Boolean);
+        if (!clean.length) return;
+        lsSet(CACHE_KEY, { t: Date.now(), d: clean });
+        applyRepos(clean);
+      }).catch(function () { lsSet(CACHE_KEY + '.block', Date.now()); });
   }
 
   /* ── Motion ── */
